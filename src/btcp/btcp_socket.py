@@ -17,12 +17,9 @@ class BTCPStates(Enum):
     ACCEPTING = 1
     SYN_SENT  = 2
     SYN_RCVD  = 3
-    _         = 4 # There's an obvious state that goes here. Give it a name.
+    ESTABLISHED = 4
     FIN_SENT  = 5
     CLOSING   = 6
-    __        = 7 # If you need more states, extend the Enum like this.
-    raise NotImplementedError("Check btcp_socket.py's BTCPStates enum. We left out some states you will need.")
-
 
 class BTCPSocket:
     """Base class for bTCP client and server sockets. Contains static helper
@@ -44,9 +41,13 @@ class BTCPSocket:
         segment, the checksum field in the header should be set to 0x0000, and
         then the resulting checksum should be put in its place.
         """
-        pass # present to be able to remove the NotImplementedError without having to implement anything yet.
-        raise NotImplementedError("No implementation of in_cksum present. Read the comments & code of btcp_socket.py.")
-
+        #Code copied from assignment 6
+        acc = sum(x for (x,) in struct.iter_unpack(R'!H', segment))
+        while acc > 0xFFFF:
+            carry = acc >> 16
+            acc &= 0xFFFF
+            acc += carry
+        return acc
 
     @staticmethod
     def build_segment_header(seqnum, acknum,
@@ -85,5 +86,20 @@ class BTCPSocket:
         tupling, so it's easy to simply return all of them in one go rather
         than make a separate method for every individual field.
         """
-        pass
-        raise NotImplementedError("No implementation of unpack_segment_header present. Read the comments & code of btcp_socket.py. You should really implement the packing / unpacking of the header into field values before doing anything else!")
+        (seqnum, acknum, flag_byte, window, length, checksum) = struct.unpack("!HHBBHH", header)
+        syn_set = 0
+        ack_set = 0
+        fin_set = 0
+        # Might want to change this :p
+        if flag_byte >= 4:
+            flag_byte -= 4
+            syn_set = 1
+        if flag_byte >= 2:
+            flag_byte -= 2
+            ack_set = 1
+        if flag_byte >= 1:
+            flag_byte -= 1
+            fin_set = 1
+        if flag_byte > 0:
+            raise NotImplementedError("Flag_byte not implemented correctly. Check btcp_socket.py")
+        return seqnum, acknum, syn_set, ack_set, fin_set, window, length, checksum
