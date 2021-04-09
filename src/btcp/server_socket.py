@@ -75,6 +75,14 @@ class BTCPServerSocket(BTCPSocket):
 
         Remember, we expect you to implement this *as a state machine!*
         """
+        acc = sum(x for (x,) in struct.iter_unpack(R'!H', segment))
+        while acc > 0xFFFF:
+            carry = acc >> 16
+            acc &= 0xFFFF
+            acc += carry
+        if acc != 0xFFFF:
+            # Checksum failed -> skip segment? (return)
+
         pass # present to be able to remove the NotImplementedError without having to implement anything yet.
         raise NotImplementedError("No implementation of lossy_layer_segment_received present. Read the comments & code of server_socket.py.")
 
