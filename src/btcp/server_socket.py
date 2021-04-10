@@ -1,6 +1,9 @@
 from btcp.btcp_socket import BTCPSocket, BTCPStates
 from btcp.lossy_layer import LossyLayer
 from btcp.constants import *
+import struct
+import queue
+import random
 
 
 class BTCPServerSocket(BTCPSocket):
@@ -41,6 +44,10 @@ class BTCPServerSocket(BTCPSocket):
         """
         super().__init__(window, timeout)
         self._lossy_layer = LossyLayer(self, SERVER_IP, SERVER_PORT, CLIENT_IP, CLIENT_PORT)
+        self.s_syn = 0 # Server-side ACK
+        self.s_queue = queue.Queue(maxsize=window)
+
+        
 
 
     ###########################################################################
@@ -61,6 +68,13 @@ class BTCPServerSocket(BTCPSocket):
     ### layer thread: Queues are inherently threadsafe, Lists are not.      ###
     ###########################################################################
 
+    def pack_and_pad(payload):
+        input_value = b'\0'
+        padding_length = 1008 - len(payload) 
+        payload = payload + (input_value * padding_length)
+        return struct.pack("!1008s", payload)
+
+
     def lossy_layer_segment_received(self, segment):
         """Called by the lossy layer whenever a segment arrives.
 
@@ -75,13 +89,32 @@ class BTCPServerSocket(BTCPSocket):
 
         Remember, we expect you to implement this *as a state machine!*
         """
+
+        # Checksum verification. If it fails the segment is dropped (return)
         acc = sum(x for (x,) in struct.iter_unpack(R'!H', segment))
         while acc > 0xFFFF:
             carry = acc >> 16
             acc &= 0xFFFF
             acc += carry
-        if acc != 0xFFFF:
-            # Checksum failed -> skip segment? (return)
+        if acc != 0xFFFF: return
+
+        # Divide the header and payload
+        header_length = 10
+        header = frame[:header_length]
+        payload = frame[header_length:]
+
+        # Unpack the header
+        seqnum, acknum, syn_set, ack_set, fin_set, window, length, checksum = unpack_segment_header(header)
+
+        # Connection establishment
+        if syn_set and this._state == BTCPStates.ACCEPTING:
+            this._state = BTCPStates.SYN_RCVD       # Set state to SYN_RCVD
+            self.s_syn = random.randint(0,65535)    # Generate Server's sequence number
+            # window size?
+            header = build_segment_header(s_syn, seqnum, syn_set=True, ack_set=True):
+            segment = header + pack_and_pad(b'')
+            self._lossy_layer.send_segment(self._lossy_layer, segment) # Send SYN & ACK
+
 
         pass # present to be able to remove the NotImplementedError without having to implement anything yet.
         raise NotImplementedError("No implementation of lossy_layer_segment_received present. Read the comments & code of server_socket.py.")

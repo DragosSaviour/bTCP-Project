@@ -13,13 +13,13 @@ class BTCPStates(Enum):
     Don't use the integer values of this enum directly. Always refer to them as
     BTCPStates.CLOSED etc.
     """
-    CLOSED    = 0
-    ACCEPTING = 1
-    SYN_SENT  = 2
-    SYN_RCVD  = 3
+    CLOSED      = 0
+    ACCEPTING   = 1
+    SYN_SENT    = 2
+    SYN_RCVD    = 3
     ESTABLISHED = 4
-    FIN_SENT  = 5
-    CLOSING   = 6
+    FIN_SENT    = 5
+    CLOSING     = 6
 
 class BTCPSocket:
     """Base class for bTCP client and server sockets. Contains static helper
@@ -28,6 +28,7 @@ class BTCPSocket:
     def __init__(self, window, timeout):
         self._window = window
         self._timeout = timeout
+        self._state = BTCPStates.CLOSED
 
 
     @staticmethod
@@ -87,19 +88,19 @@ class BTCPSocket:
         than make a separate method for every individual field.
         """
         (seqnum, acknum, flag_byte, window, length, checksum) = struct.unpack("!HHBBHH", header)
-        syn_set = 0
-        ack_set = 0
-        fin_set = 0
+        syn_set = False
+        ack_set = False
+        fin_set = False
         # Might want to change this :p
         if flag_byte >= 4:
             flag_byte -= 4
-            syn_set = 1
+            syn_set = True
         if flag_byte >= 2:
             flag_byte -= 2
-            ack_set = 1
+            ack_set = True
         if flag_byte >= 1:
             flag_byte -= 1
-            fin_set = 1
+            fin_set = True
         if flag_byte > 0:
             raise NotImplementedError("Flag_byte not implemented correctly. Check btcp_socket.py")
         return seqnum, acknum, syn_set, ack_set, fin_set, window, length, checksum
