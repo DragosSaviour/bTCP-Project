@@ -7,6 +7,7 @@ import random
 
 
 class BTCPServerSocket(BTCPSocket):
+
     """bTCP server socket
     A server application makes use of the services provided by bTCP by calling
     accept, recv, and close.
@@ -44,9 +45,10 @@ class BTCPServerSocket(BTCPSocket):
         """
         super().__init__(window, timeout)
         self._lossy_layer = LossyLayer(self, SERVER_IP, SERVER_PORT, CLIENT_IP, CLIENT_PORT)
-        self.s_syn = 0 # Server-side ACK
         self.s_queue = queue.Queue(maxsize=window)
-
+        self.s_syn = 0
+        self.establishing_ack = 0
+        self.closing_ack = 0
         
 
 
@@ -100,20 +102,43 @@ class BTCPServerSocket(BTCPSocket):
 
         # Divide the header and payload
         header_length = 10
-        header = frame[:header_length]
-        payload = frame[header_length:]
+        header = segment[:header_length]
+        payload = segment[header_length:]
 
         # Unpack the header
         seqnum, acknum, syn_set, ack_set, fin_set, window, length, checksum = unpack_segment_header(header)
 
         # Connection establishment
-        if syn_set and this._state == BTCPStates.ACCEPTING:
-            this._state = BTCPStates.SYN_RCVD       # Set state to SYN_RCVD
-            self.s_syn = random.randint(0,65535)    # Generate Server's sequence number
-            # window size?
-            header = build_segment_header(s_syn, seqnum, syn_set=True, ack_set=True):
+        if syn_set and (this._state == BTCPStates.ACCEPTING or this._state == BTCPStates.SYN_RCVD):
+            this._state = BTCPStates.SYN_RCVD                   # Set state to SYN_RCVD
+            if self.s_syn == 0:
+                self.s_syn = random.randint(1,65535)            # Generate Server's sequence number
+            window = max(1, self._window - len(self.s_queue))   # Window size = empty spaces in the queue
+            header = build_segment_header(self.s_syn, seqnum, syn_set=True, ack_set=True, window=window):
             segment = header + pack_and_pad(b'')
-            self._lossy_layer.send_segment(self._lossy_layer, segment) # Send SYN & ACK
+            self._lossy_layer.send_segment(self._lossy_layer, segment) # Sent ack and syn
+            if self.establishing_ack == 0:
+                self.establishing_ack = self.s_syn              # Remember sequence number
+            return
+        if ack_set and this._state == SYN_RCVD and acknum == self.establishing_ack:
+            this._state = BTCPStates.ESTABLISHED
+            return
+                    
+        # Connection termination
+        if fin_set and (this._state == BTCPStates.ESTABLISHED or this._state == BTCPStates.CLOSING):
+            this._state = BTCPStates.CLOSING                    # Set state to CLOSING
+            if self.closing_ack == 0:
+                self.s_syn = self.s_syn + 1                     # Increment sequence number (if we haven't sent an ack before)
+            header = build_segment_header(self.s_syn, seqnum, ack_set=True, fin_set=True)
+            segment = header + pack_and_pad(b'')
+            self._lossy_layer.send_segment(self._lossy_layer, segment) # Sent ack & fin
+            if self.closing_ack == 0:
+                self.closing_ack = self.s_syn                   # Remember sequence number
+            return
+        if ack_set and this._state == CLOSING and acknum == self.closing_ack:
+            self._state = BTCPStates.CLOSED
+            self._lossy_layer.__del__(self._lossy_layer)
+            return
 
 
         pass # present to be able to remove the NotImplementedError without having to implement anything yet.
