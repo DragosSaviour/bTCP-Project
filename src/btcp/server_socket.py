@@ -4,6 +4,7 @@ from btcp.constants import *
 import struct
 import queue
 import random
+import time
 
 
 class BTCPServerSocket(BTCPSocket):
@@ -47,6 +48,7 @@ class BTCPServerSocket(BTCPSocket):
         self._lossy_layer = LossyLayer(self, SERVER_IP, SERVER_PORT, CLIENT_IP, CLIENT_PORT)
         self.s_queue = queue.Queue(maxsize=window)
         self.s_syn = 0
+        self.s_ack = 0
         self.establishing_ack = 0
         self.closing_ack = 0
         
@@ -70,12 +72,23 @@ class BTCPServerSocket(BTCPSocket):
     ### layer thread: Queues are inherently threadsafe, Lists are not.      ###
     ###########################################################################
 
-    def pack_and_pad(payload):
+    ############## Helper Functions ##################
+    def pack_and_pad(payload):  
+        # Pad the payload so it has length 1008. Then pack it into bytes.
         input_value = b'\0'
         padding_length = 1008 - len(payload) 
         payload = payload + (input_value * padding_length)
         return struct.pack("!1008s", payload)
 
+
+    def increment_synack(syn):
+        # Ensure syn is never out of bounds and never 0, since we use that as a boolean
+        if syn < 65535:     return syn + 1
+        else:               return 1
+
+
+    ###################################################
+    
 
     def lossy_layer_segment_received(self, segment):
         """Called by the lossy layer whenever a segment arrives.
@@ -91,7 +104,6 @@ class BTCPServerSocket(BTCPSocket):
 
         Remember, we expect you to implement this *as a state machine!*
         """
-
         # Checksum verification. If it fails the segment is dropped (return)
         acc = sum(x for (x,) in struct.iter_unpack(R'!H', segment))
         while acc > 0xFFFF:
@@ -109,40 +121,44 @@ class BTCPServerSocket(BTCPSocket):
         seqnum, acknum, syn_set, ack_set, fin_set, window, length, checksum = unpack_segment_header(header)
 
         # Connection establishment
-        if syn_set and (this._state == BTCPStates.ACCEPTING or this._state == BTCPStates.SYN_RCVD):
-            this._state = BTCPStates.SYN_RCVD                   # Set state to SYN_RCVD
-            if self.s_syn == 0:
-                self.s_syn = random.randint(1,65535)            # Generate Server's sequence number
-            window = max(1, self._window - len(self.s_queue))   # Window size = empty spaces in the queue
-            header = build_segment_header(self.s_syn, seqnum, syn_set=True, ack_set=True, window=window):
-            segment = header + pack_and_pad(b'')
-            self._lossy_layer.send_segment(self._lossy_layer, segment) # Sent ack and syn
-            if self.establishing_ack == 0:
-                self.establishing_ack = self.s_syn              # Remember sequence number
+        if syn_set and (self._state == BTCPStates.ACCEPTING or self._state == BTCPStates.SYN_RCVD):
+            self.s_ack = seqnum                                 # Remember sequence number of client
+            self._state = BTCPStates.SYN_RCVD                   # Set state to SYN_RCVD
             return
-        if ack_set and this._state == SYN_RCVD and acknum == self.establishing_ack:
-            this._state = BTCPStates.ESTABLISHED
+        if ack_set and self._state == SYN_RCVD and acknum == self.establishing_ack and (self.s_ack + 1) == seqnum:
+            self.s_ack = increment_synack(self.s_ack)
+            self._state = BTCPStates.ESTABLISHED
             return
                     
         # Connection termination
-        if fin_set and (this._state == BTCPStates.ESTABLISHED or this._state == BTCPStates.CLOSING):
-            this._state = BTCPStates.CLOSING                    # Set state to CLOSING
+        # Missing a timeout
+        if fin_set and (self._state == BTCPStates.ESTABLISHED or self._state == BTCPStates.CLOSING):
+            self._state = BTCPStates.CLOSING                    # Set state to CLOSING
             if self.closing_ack == 0:
-                self.s_syn = self.s_syn + 1                     # Increment sequence number (if we haven't sent an ack before)
+                self.s_syn = increment_synack(self.s_syn)          # Increment sequence number (if we haven't sent an ack before)
             header = build_segment_header(self.s_syn, seqnum, ack_set=True, fin_set=True)
             segment = header + pack_and_pad(b'')
             self._lossy_layer.send_segment(self._lossy_layer, segment) # Sent ack & fin
             if self.closing_ack == 0:
                 self.closing_ack = self.s_syn                   # Remember sequence number
             return
-        if ack_set and this._state == CLOSING and acknum == self.closing_ack:
+        if ack_set and self._state == CLOSING and acknum == self.closing_ack:
             self._state = BTCPStates.CLOSED
             self._lossy_layer.__del__(self._lossy_layer)
             return
 
-
-        pass # present to be able to remove the NotImplementedError without having to implement anything yet.
-        raise NotImplementedError("No implementation of lossy_layer_segment_received present. Read the comments & code of server_socket.py.")
+        # Processing segments during establishment
+        if not ack_set and not syn_set and not fin_set and self._state == BTCPStates.ESTABLISHED:
+            if (self.s_ack + 1 == seqnum):  # if next expected segment put it in queue and increment syn
+                self.s_syn = increment_synack(self.s_syn)
+                self.s_ack = increment_synack(self.s_ack)
+                self.s_queue.put(payload)
+            window = max(1, self._window - len(self.s_queue))
+            # 
+            header = build_segment_header(self.s_syn, self.s_ack, window=window)
+            segment = header + pack_and_pad(b'')
+            self._lossy_layer.send_segment(self._lossy_layer, segment)
+            return
 
 
     def lossy_layer_tick(self):
@@ -198,6 +214,14 @@ class BTCPServerSocket(BTCPSocket):
     ### above.                                                              ###
     ###########################################################################
 
+    def send_SYNACK():
+        window = max(1, self._window - len(self.s_queue))
+        header = build_segment_header(self.s_syn, self.s_ack, syn_set=True, ack_set=True, window=window)
+        segment = header + pack_and_pad(b'')
+        self._lossy_layer.send_segment(self._lossy_layer, segment)
+        return
+
+
     def accept(self):
         """Accept and perform the bTCP three-way handshake to establish a
         connection.
@@ -215,8 +239,34 @@ class BTCPServerSocket(BTCPSocket):
         boolean or enum has the expected value. We do not think you will need
         more advanced thread synchronization in this project.
         """
-        pass # present to be able to remove the NotImplementedError without having to implement anything yet.
-        raise NotImplementedError("No implementation of accept present. Read the comments & code of server_socket.py.")
+        timeout = 0
+        while(True):
+            if self.s_syn == 0:
+                self.s_syn = random.randint(1,65535)        # Generate Server's sequence number
+            self.establishing_ack = self.s_syn              # Remember sequence number
+            self._state = BTCPStates.ACCEPTING              
+
+            # ACCEPTING -> SYN_RCVD
+            while self._state != BTCPStates.SYN_RCVD:
+                time.sleep(10)
+                timeout += 10
+                if timeout > 5000:
+                    self._state = BTCPStates.CLOSED
+                    break
+            send_SYNACK()
+            
+            # SYN_RCVD -> ESTABLISHED
+            retries = 0
+            timer = 0
+            time.sleep(10)
+            while self._state != BTCPStates.ESTABLISHED and retries < 20 and timer < 250:
+                send_SYNACK()
+                retries += 1
+                timer += 10
+                time.sleep(10)
+            if self._state == BTCPStates.ESTABLISHED:
+                break
+            
 
 
     def recv(self):
@@ -250,8 +300,20 @@ class BTCPServerSocket(BTCPSocket):
 
         Again, you should feel free to deviate from how this usually works.
         """
-        pass # present to be able to remove the NotImplementedError without having to implement anything yet.
-        raise NotImplementedError("No implementation of recv present. Read the comments & code of server_socket.py.")
+        # wait for data
+        while(self.s_queue.empty() and self._state == BTCPStates.ESTABLISHED):
+            time.sleep(100)
+
+        # Get data from the queue
+        # If connection has been terminated and queue is empty returns empty byte
+        data = b''
+        data_segments = 0
+        while(data_segments <= 25): # Returns max 25 segments of data in one go
+            try: data += self.s_queue.get(False)
+            except Queue.Emtpy: break
+            data_segments += 1
+        
+        return data
 
 
     def close(self):

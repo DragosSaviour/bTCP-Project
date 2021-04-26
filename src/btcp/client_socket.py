@@ -37,6 +37,11 @@ class BTCPClientSocket(BTCPSocket):
         """
         super().__init__(window, timeout)
         self._lossy_layer = LossyLayer(self, CLIENT_IP, CLIENT_PORT, SERVER_IP, SERVER_PORT)
+        self.s_queue = queue.Queue(maxsize=window)
+        self.s_syn = 0
+        self.s_ack = 0
+        self.establishing_ack = 0
+        self.closing_ack = 0
 
 
     ###########################################################################
@@ -65,6 +70,16 @@ class BTCPClientSocket(BTCPSocket):
 
         Remember, we expect you to implement this *as a state machine!*
         """
+        # Checksum verification. If it fails the segment is dropped (return)
+        acc = sum(x for (x,) in struct.iter_unpack(R'!H', segment))
+        while acc > 0xFFFF:
+            carry = acc >> 16
+            acc &= 0xFFFF
+            acc += carry
+        if acc != 0xFFFF: return
+
+
+        
         pass # present to be able to remove the NotImplementedError without having to implement anything yet.
         raise NotImplementedError("No implementation of lossy_layer_segment_received present. Read the comments & code of client_socket.py.")
 
